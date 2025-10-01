@@ -9,7 +9,7 @@ import threading
 
 # ===== CONFIG =====
 API_URL = "https://www.vn58q.bet/api/minigame/games/PK3_60S/history100"
-INTERVAL = 60  # giây
+INTERVAL = 3600  # giây
 
 # ===== DB helper =====
 DATABASE_URL = "postgresql://postgres.yqtvaxgthwqjegjouxko:12345abC_MatKhau@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres?sslmode=require"
