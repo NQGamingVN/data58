@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: sicbo-collector
+    env: python
+    region: singapore
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python app.py"
+    envVars:
+      - key: DATABASE_URL
+        value: "postgresql://postgres.yqtvaxgthwqjegjouxko:12345abC_MatKhau@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres"
+      - key: API_TOKEN
+        value: "eyJhbGciOiJSUzI1NiIsImtpZCI6ImFKTHhUajhxOU1ZMWlkbHZaZHIyTyIsInR5cCI6IkpXVCJ9.eyJhbHRJZCI6NDM3NjI3MiwiYXVkIjpbImxvdG8iXSwiY2x0IjoxMDU4LCJleHAiOjE3NTk0MTY3ODksImd0eSI6InBhc3N3b3JkIiwiaWF0IjoxNzU5MzMwMzc5LCJpc3MiOiJodHRwczovL3ZuNTguanAuYXV0aDAuY29tLyIsInN1YiI6IjY3ZmY3YmJmOGY3MDAwNDZhNzUxNmIxZCIsInVzZXJUeXBlIjoiQUdFTlQiLCJ1c2VybmFtZSI6InF1YW5nbm9ybWFsIn0.dyUgAsYsBBc9SJ1jU9-xuB0D-rj6bpB_HMxjtL0vBjv0Nkod2wqUcJv8jtSxxgjZoZcRSETFQREMR5MmlQaqds4shn4Rd5fxW7eSHRBHh9m66h3usvyzaTqW4coRpkQFTkQmP0vAdZGpREQ7NaIubMwBlH-nmKRtazgkTRT1Q16ZEgdDtXgR_-o-nfpZcuFVvbaoHiwFFeuLjwgPhX7VG9uVTwW5GDqFM-LVR6X7IpEINRbgLrXONDWO2C3zP8VpGB4z4EJ7XeXl4hHPJ0BRxDJRbEavVSt-aX8yyKWUq7hEZPT_OO6SHEpimjRPFqb125DWOuMRpQ4siZ4JLDR2_YL0AoKccfAmmqClLNZwHXAepv8ZctWtNHNaAYaR_mD-pd9ER2JBdrR6Km2Afp_azdNmoCmrib-yYaw8TJqpo93h4aMEZ44bHDCO43VqaC2Fp2MXuKF2o7viniOT_-tLnUfV6mhqhZsoYqofqND6hlA5RnX-1QujqHdmzsRpZ9j0OPuG3innOV4eZ1jSIvrpHoEZBNnv-d3wcjuq-d55PaCoYt2MQPfCHt0tIysFm5Z4nFwPAtaypSXpWpbciNoBBZs7-z3xiB9euNE0TRrrsYOkGKaI53gCM4DRSEacKORp-RjWEJT9JzGnQ1C5XCaLPXPJipJZW7c--gejdU9ntKk"
