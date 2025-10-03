@@ -1,82 +1,54 @@
-# app.py
 import os
-import time
 import requests
 import psycopg2
+from psycopg2.extras import DictCursor
 from datetime import datetime
-from flask import Flask
-import threading
 
-# ===== CONFIG =====
-API_URL = "https://www.vn58q.bet/api/minigame/games/PK3_60S/history100"
+# ================== CONFIG ==================
+DB_HOST = "aws-1-ap-southeast-1.pooler.supabase.com"
+DB_PORT = "5432"
+DB_NAME = "postgres"
+DB_USER = "postgres.oyksgzdnbmdgqosxosid"
+DB_PASS = "He4YjRjFdK5k7Mno"
+
 LOGIN_URL = "https://www.vn58q.bet/api/account/login"
+DATA_URL = "https://www.vn58q.bet/api/sessions"
 
 USERNAME = "quangnormal"
-PASSWORD = "12345abC_"    # thay mật khẩu thật vào
-DEVICE_ID = "b01c2bec8afd532578f3b73ae748082d"
+PASSWORD = "12345abC_"
+DEVICE_ID = "86df014ab3a79d197a9e394428ba73a1"
 
-INTERVAL = 3600  # giây
-
-DATABASE_URL = "postgresql://postgres.yqtvaxgthwqjegjouxko:12345abC_MatKhau@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres?sslmode=require"
-
-# ===== DB helper =====
-def get_conn():
-    retries = 5
-    for i in range(retries):
-        try:
-            conn = psycopg2.connect(DATABASE_URL)
-            conn.autocommit = True
-            print(f"✅ Kết nối DB thành công (attempt {i+1})", flush=True)
-            return conn
-        except Exception as e:
-            print(f"❌ Kết nối DB thất bại ({i+1}/{retries}): {e}", flush=True)
-            time.sleep(5)
-    raise Exception("Không thể kết nối DB")
+# ================== DB ==================
+def get_db_conn():
+    return psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASS
+    )
 
 def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS sessions_new (
-        issue_id TEXT PRIMARY KEY,
-        dice1 SMALLINT,
-        dice2 SMALLINT,
-        dice3 SMALLINT,
-        point SMALLINT,
-        result_text TEXT,
-        raw_result TEXT,
-        created_at TIMESTAMP DEFAULT NOW()
-    )
-    """)
-    cur.close()
-    conn.close()
-    print("✅ Bảng sessions_new đã sẵn sàng", flush=True)
+    with get_db_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS sessions_new (
+            id BIGINT PRIMARY KEY,
+            created_at TIMESTAMP,
+            user_id BIGINT,
+            amount NUMERIC,
+            status TEXT
+        );
+        """)
+        conn.commit()
 
-# ===== Parse helper =====
-def parse_result_string(r):
-    if not r:
-        return None
-    r = str(r).strip()
-    digits = [ch for ch in r if ch.isdigit()]
-    if len(digits) >= 3:
-        d1, d2, d3 = int(digits[0]), int(digits[1]), int(digits[2])
-        return d1, d2, d3
-    parts = [p for p in r.replace(',', ':').split(':') if p.strip().isdigit()]
-    if len(parts) >= 3:
-        return int(parts[0]), int(parts[1]), int(parts[2])
-    return None
-
-def point_to_text(point):
-    return "TAI" if point >= 11 else "XIU"
-
-# ===== LOGIN =====
+# ================== LOGIN ==================
 def get_token():
     try:
         data = {
             "username": USERNAME,
             "password": PASSWORD,
             "siteKey": "6LfR_pYpAAAAAN20hVh1-AaBbVuf4oN7e4JU91dt",
-            "captcha": ""   # nếu không yêu cầu captcha thì để trống
+            "captcha": ""   # để trống nếu không cần captcha
         }
         headers = {
             "accept": "application/json, text/plain, */*",
@@ -89,17 +61,83 @@ def get_token():
         }
         resp = requests.post(LOGIN_URL, data=data, headers=headers, timeout=30)
         resp.raise_for_status()
-        token = resp.json().get("idToken") or resp.json().get("accessToken")
+        js = resp.json()
+        print(f"📥 Login response: {js}", flush=True)
+
+        token = (
+            js.get("idToken")
+            or js.get("accessToken")
+            or js.get("access_token")
+            or js.get("token")
+            or js.get("data", {}).get("idToken")
+            or js.get("data", {}).get("accessToken")
+            or js.get("data", {}).get("access_token")
+        )
+
         if not token:
-            raise Exception(f"Không lấy được token: {resp.text}")
+            raise Exception(f"Không lấy được token từ response: {js}")
+
         print(f"🔑 Lấy token thành công", flush=True)
         return token
     except Exception as e:
         print(f"❌ Lỗi login: {e}", flush=True)
         return None
 
-# ===== Save rows =====
-def save_rows(rows):
+# ================== FETCH DATA ==================
+def fetch_data(token):
+    try:
+        headers = {
+            "accept": "application/json, text/plain, */*",
+            "authorization": f"Bearer {token}",
+            "user-agent": "Mozilla/5.0",
+        }
+        resp = requests.get(DATA_URL, headers=headers, timeout=30)
+        resp.raise_for_status()
+        js = resp.json()
+        return js.get("data", [])
+    except Exception as e:
+        print(f"❌ Lỗi fetch data: {e}", flush=True)
+        return []
+
+# ================== SAVE DB ==================
+def save_to_db(rows):
+    with get_db_conn() as conn, conn.cursor() as cur:
+        for row in rows:
+            try:
+                cur.execute("""
+                    INSERT INTO sessions_new (id, created_at, user_id, amount, status)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING;
+                """, (
+                    row.get("id"),
+                    datetime.fromtimestamp(row.get("createdAt")/1000) if row.get("createdAt") else None,
+                    row.get("userId"),
+                    row.get("amount"),
+                    row.get("status"),
+                ))
+            except Exception as e:
+                print(f"⚠️ Lỗi insert row {row}: {e}", flush=True)
+        conn.commit()
+
+# ================== MAIN ==================
+def main():
+    init_db()
+    token = get_token()
+    if not token:
+        print("❌ Không có token, dừng lại.", flush=True)
+        return
+
+    rows = fetch_data(token)
+    if not rows:
+        print("❌ Không lấy được dữ liệu", flush=True)
+        return
+
+    print(f"📊 Lấy {len(rows)} dòng dữ liệu", flush=True)
+    save_to_db(rows)
+    print("✅ Đã lưu vào DB", flush=True)
+
+if __name__ == "__main__":
+    main()def save_rows(rows):
     if not rows:
         return 0
     conn = get_conn()
