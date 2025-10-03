@@ -8,17 +8,18 @@ from flask import Flask
 import threading
 
 # ===== CONFIG =====
-LOGIN_URL = "https://www.vn58q.bet/api/account/login"
 API_URL = "https://www.vn58q.bet/api/minigame/games/PK3_60S/history100"
-INTERVAL = 3600  # giây
+LOGIN_URL = "https://www.vn58q.bet/api/account/login"
 
 USERNAME = "quangnormal"
-PASSWORD = "12345abC_"
+PASSWORD = "12345abC_"    # thay mật khẩu thật vào
 DEVICE_ID = "b01c2bec8afd532578f3b73ae748082d"
 
-# ===== DB helper =====
+INTERVAL = 3600  # giây
+
 DATABASE_URL = "postgresql://postgres.yqtvaxgthwqjegjouxko:12345abC_MatKhau@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres?sslmode=require"
 
+# ===== DB helper =====
 def get_conn():
     retries = 5
     for i in range(retries):
@@ -68,38 +69,112 @@ def parse_result_string(r):
 def point_to_text(point):
     return "TAI" if point >= 11 else "XIU"
 
-# ===== Login helper =====
-def get_api_token():
-    login_data = {
-        "username": USERNAME,
-        "password": PASSWORD,
-        "siteKey": "6LfR_pYpAAAAAN20hVh1-AaBbVuf4oN7e4JU91dt",
-        "captcha": "0"   # bypass, nếu server không bắt buộc captcha
-    }
-    headers = {
-        "content-type": "application/x-www-form-urlencoded",
-        "device-id": DEVICE_ID,
-        "referer": "https://www.vn58q.bet/login",
-        "accept": "application/json, text/plain, */*",
-        "user-agent": "Mozilla/5.0"
-    }
+# ===== LOGIN =====
+def get_token():
     try:
-        r = requests.post(LOGIN_URL, data=login_data, headers=headers, timeout=15)
-        r.raise_for_status()
-        token = r.json().get("access_token")
+        data = {
+            "username": USERNAME,
+            "password": PASSWORD,
+            "siteKey": "6LfR_pYpAAAAAN20hVh1-AaBbVuf4oN7e4JU91dt",
+            "captcha": ""   # nếu không yêu cầu captcha thì để trống
+        }
+        headers = {
+            "accept": "application/json, text/plain, */*",
+            "content-type": "application/x-www-form-urlencoded",
+            "device-id": DEVICE_ID,
+            "origin": "https://www.vn58q.bet",
+            "referer": "https://www.vn58q.bet/login",
+            "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
+        }
+        resp = requests.post(LOGIN_URL, data=data, headers=headers, timeout=30)
+        resp.raise_for_status()
+        token = resp.json().get("idToken") or resp.json().get("accessToken")
         if not token:
-            raise Exception("Không lấy được access_token")
+            raise Exception(f"Không lấy được token: {resp.text}")
+        print(f"🔑 Lấy token thành công", flush=True)
         return token
     except Exception as e:
-        print(f"[{datetime.now()}] ❌ Lỗi login: {e}", flush=True)
+        print(f"❌ Lỗi login: {e}", flush=True)
         return None
 
-# ===== Fetch & save =====
+# ===== Save rows =====
 def save_rows(rows):
     if not rows:
         return 0
     conn = get_conn()
     cur = conn.cursor()
+    inserted = 0
+    for r in rows:
+        try:
+            issue_id = r.get("issueId") or r.get("issue_id")
+            raw_result = r.get("result")
+            parsed = parse_result_string(raw_result)
+            if not issue_id or not parsed:
+                print(f"[{datetime.now()}] ⚠️ Bỏ qua row: {r}", flush=True)
+                continue
+            dice1, dice2, dice3 = parsed
+            point = dice1 + dice2 + dice3
+            result_text = point_to_text(point)
+            cur.execute("""
+                INSERT INTO sessions_new (issue_id, dice1, dice2, dice3, point, result_text, raw_result)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (issue_id) DO NOTHING
+            """, (issue_id, dice1, dice2, dice3, point, result_text, str(raw_result)))
+            inserted += 1
+        except Exception as e:
+            print(f"[{datetime.now()}] ❌ Lỗi insert row: {e}", flush=True)
+    conn.commit()
+    cur.close()
+    conn.close()
+    return inserted
+
+# ===== Fetch & save =====
+def fetch_and_save():
+    token = get_token()
+    if not token:
+        return 0
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "authorization": f"Bearer {token}",
+        "device-id": DEVICE_ID,
+    }
+    try:
+        resp = requests.get(API_URL, headers=headers, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        rows = data if isinstance(data, list) else data.get("list") or data.get("data") or []
+        saved = save_rows(rows)
+        print(f"[{datetime.now()}] 🔗 Status: {resp.status_code}, Lưu/attempted {saved}/{len(rows)} rows", flush=True)
+        return saved
+    except Exception as e:
+        print(f"[{datetime.now()}] ❌ Lỗi fetch/save: {e}", flush=True)
+        return 0
+
+# ===== Loop task =====
+def loop_task():
+    init_db()
+    while True:
+        fetch_and_save()
+        print(f"⏳ Chờ {INTERVAL} giây để fetch lần tiếp theo...\n", flush=True)
+        time.sleep(INTERVAL)
+
+# ===== Flask =====
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "vn58 collector is running 🐢"
+
+@app.route("/health")
+def health():
+    return "OK"
+
+if __name__ == "__main__":
+    t = threading.Thread(target=loop_task, daemon=True)
+    t.start()
+    port = int(os.environ.get("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)    cur = conn.cursor()
     inserted = 0
     for r in rows:
         try:
