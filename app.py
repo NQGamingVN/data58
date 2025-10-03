@@ -1,54 +1,82 @@
+# app.py
 import os
+import time
 import requests
 import psycopg2
-from psycopg2.extras import DictCursor
 from datetime import datetime
+from flask import Flask
+import threading
 
-# ================== CONFIG ==================
-DB_HOST = "aws-1-ap-southeast-1.pooler.supabase.com"
-DB_PORT = "5432"
-DB_NAME = "postgres"
-DB_USER = "postgres.oyksgzdnbmdgqosxosid"
-DB_PASS = "He4YjRjFdK5k7Mno"
-
+# ===== CONFIG =====
+API_URL = "https://www.vn58q.bet/api/minigame/games/PK3_60S/history100"
 LOGIN_URL = "https://www.vn58q.bet/api/account/login"
-DATA_URL = "https://www.vn58q.bet/api/sessions"
 
 USERNAME = "quangnormal"
-PASSWORD = "12345abC_"
-DEVICE_ID = "86df014ab3a79d197a9e394428ba73a1"
+PASSWORD = "12345abC_"    # thay mật khẩu thật vào
+DEVICE_ID = "b01c2bec8afd532578f3b73ae748082d"
 
-# ================== DB ==================
-def get_db_conn():
-    return psycopg2.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASS
-    )
+INTERVAL = 3600  # giây
+
+DATABASE_URL = "postgresql://postgres.yqtvaxgthwqjegjouxko:12345abC_MatKhau@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres?sslmode=require"
+
+# ===== DB helper =====
+def get_conn():
+    retries = 5
+    for i in range(retries):
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            conn.autocommit = True
+            print(f"✅ Kết nối DB thành công (attempt {i+1})", flush=True)
+            return conn
+        except Exception as e:
+            print(f"❌ Kết nối DB thất bại ({i+1}/{retries}): {e}", flush=True)
+            time.sleep(5)
+    raise Exception("Không thể kết nối DB")
 
 def init_db():
-    with get_db_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS sessions_new (
-            id BIGINT PRIMARY KEY,
-            created_at TIMESTAMP,
-            user_id BIGINT,
-            amount NUMERIC,
-            status TEXT
-        );
-        """)
-        conn.commit()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS sessions_new (
+        issue_id TEXT PRIMARY KEY,
+        dice1 SMALLINT,
+        dice2 SMALLINT,
+        dice3 SMALLINT,
+        point SMALLINT,
+        result_text TEXT,
+        raw_result TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+    )
+    """)
+    cur.close()
+    conn.close()
+    print("✅ Bảng sessions_new đã sẵn sàng", flush=True)
 
-# ================== LOGIN ==================
+# ===== Parse helper =====
+def parse_result_string(r):
+    if not r:
+        return None
+    r = str(r).strip()
+    digits = [ch for ch in r if ch.isdigit()]
+    if len(digits) >= 3:
+        d1, d2, d3 = int(digits[0]), int(digits[1]), int(digits[2])
+        return d1, d2, d3
+    parts = [p for p in r.replace(',', ':').split(':') if p.strip().isdigit()]
+    if len(parts) >= 3:
+        return int(parts[0]), int(parts[1]), int(parts[2])
+    return None
+
+def point_to_text(point):
+    return "TAI" if point >= 11 else "XIU"
+
+# ===== LOGIN =====
 def get_token():
     try:
         data = {
             "username": USERNAME,
             "password": PASSWORD,
             "siteKey": "6LfR_pYpAAAAAN20hVh1-AaBbVuf4oN7e4JU91dt",
-            "captcha": ""   # để trống nếu không cần captcha
+            "captcha": ""
         }
         headers = {
             "accept": "application/json, text/plain, */*",
@@ -61,80 +89,90 @@ def get_token():
         }
         resp = requests.post(LOGIN_URL, data=data, headers=headers, timeout=30)
         resp.raise_for_status()
-        js = resp.json()
-        print(f"📥 Login response: {js}", flush=True)
-
-        token = (
-            js.get("idToken")
-            or js.get("accessToken")
-            or js.get("access_token")
-            or js.get("token")
-            or js.get("data", {}).get("idToken")
-            or js.get("data", {}).get("accessToken")
-            or js.get("data", {}).get("access_token")
-        )
-
+        token = resp.json().get("access_token")
         if not token:
-            raise Exception(f"Không lấy được token từ response: {js}")
-
-        print(f"🔑 Lấy token thành công", flush=True)
+            raise Exception(f"Không lấy được access_token: {resp.text}")
+        print("🔑 Lấy access_token thành công", flush=True)
         return token
     except Exception as e:
         print(f"❌ Lỗi login: {e}", flush=True)
         return None
 
-# ================== FETCH DATA ==================
-def fetch_data(token):
-    try:
-        headers = {
-            "accept": "application/json, text/plain, */*",
-            "authorization": f"Bearer {token}",
-            "user-agent": "Mozilla/5.0",
-        }
-        resp = requests.get(DATA_URL, headers=headers, timeout=30)
-        resp.raise_for_status()
-        js = resp.json()
-        return js.get("data", [])
-    except Exception as e:
-        print(f"❌ Lỗi fetch data: {e}", flush=True)
-        return []
+# ===== Save rows =====
+def save_rows(rows):
+    if not rows:
+        return 0
+    conn = get_conn()
+    cur = conn.cursor()
+    inserted = 0
+    for r in rows:
+        try:
+            issue_id = r.get("issueId") or r.get("issue_id")
+            raw_result = r.get("result")
+            parsed = parse_result_string(raw_result)
+            if not issue_id or not parsed:
+                print(f"[{datetime.now()}] ⚠️ Bỏ qua row: {r}", flush=True)
+                continue
+            dice1, dice2, dice3 = parsed
+            point = dice1 + dice2 + dice3
+            result_text = point_to_text(point)
+            cur.execute("""
+                INSERT INTO sessions_new (issue_id, dice1, dice2, dice3, point, result_text, raw_result)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (issue_id) DO NOTHING
+            """, (issue_id, dice1, dice2, dice3, point, result_text, str(raw_result)))
+            inserted += 1
+        except Exception as e:
+            print(f"[{datetime.now()}] ❌ Lỗi insert row: {e}", flush=True)
+    conn.commit()
+    cur.close()
+    conn.close()
+    return inserted
 
-# ================== SAVE DB ==================
-def save_to_db(rows):
-    with get_db_conn() as conn, conn.cursor() as cur:
-        for row in rows:
-            try:
-                cur.execute("""
-                    INSERT INTO sessions_new (id, created_at, user_id, amount, status)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO NOTHING;
-                """, (
-                    row.get("id"),
-                    datetime.fromtimestamp(row.get("createdAt")/1000) if row.get("createdAt") else None,
-                    row.get("userId"),
-                    row.get("amount"),
-                    row.get("status"),
-                ))
-            except Exception as e:
-                print(f"⚠️ Lỗi insert row {row}: {e}", flush=True)
-        conn.commit()
-
-# ================== MAIN ==================
-def main():
-    init_db()
+# ===== Fetch & save =====
+def fetch_and_save():
     token = get_token()
     if not token:
-        print("❌ Không có token, dừng lại.", flush=True)
-        return
+        return 0
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "authorization": f"Bearer {token}",
+        "device-id": DEVICE_ID,
+    }
+    try:
+        resp = requests.get(API_URL, headers=headers, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        rows = data if isinstance(data, list) else data.get("list") or data.get("data") or []
+        saved = save_rows(rows)
+        print(f"[{datetime.now()}] 🔗 Status: {resp.status_code}, Lưu/attempted {saved}/{len(rows)} rows", flush=True)
+        return saved
+    except Exception as e:
+        print(f"[{datetime.now()}] ❌ Lỗi fetch/save: {e}", flush=True)
+        return 0
 
-    rows = fetch_data(token)
-    if not rows:
-        print("❌ Không lấy được dữ liệu", flush=True)
-        return
+# ===== Loop task =====
+def loop_task():
+    init_db()
+    while True:
+        fetch_and_save()
+        print(f"⏳ Chờ {INTERVAL} giây để fetch lần tiếp theo...\n", flush=True)
+        time.sleep(INTERVAL)
 
-    print(f"📊 Lấy {len(rows)} dòng dữ liệu", flush=True)
-    save_to_db(rows)
-    print("✅ Đã lưu vào DB", flush=True)
+# ===== Flask =====
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "vn58 collector is running 🐢"
+
+@app.route("/health")
+def health():
+    return "OK"
 
 if __name__ == "__main__":
-    main()
+    t = threading.Thread(target=loop_task, daemon=True)
+    t.start()
+    port = int(os.environ.get("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
+        
