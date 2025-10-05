@@ -318,23 +318,99 @@ def get_statistics():
     
     return stats
 
-# ===== Export Functions =====
+# ===== XUẤT FILE TOÀN BỘ =====
+def export_full_txt():
+    """Xuất file TXT toàn bộ"""
+    conn = get_conn()
+    if not conn:
+        return "❌ Lỗi kết nối database", 500
+    
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT issue_id, dice1, dice2, dice3, point, result_text FROM sessions_new ORDER BY issue_id ASC")
+        rows = cur.fetchall()
+        
+        if not rows:
+            return "❌ Không có dữ liệu để xuất", 404
+        
+        filename = f"vn58_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        content = ""
+        for row in rows:
+            issue_id, dice1, dice2, dice3, point, result_text = row
+            content += f"{issue_id}|{dice1}:{dice2}:{dice3}|{point}|{result_text}\n"
+        
+        return Response(
+            content,
+            mimetype="text/plain",
+            headers={"Content-Disposition": f"attachment;filename={filename}"}
+        )
+        
+    except Exception as e:
+        return f"❌ Lỗi khi xuất file TXT: {e}", 500
+    finally:
+        cur.close()
+        conn.close()
+
+def export_full_json():
+    """Xuất file JSON toàn bộ"""
+    conn = get_conn()
+    if not conn:
+        return "❌ Lỗi kết nối database", 500
+    
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT issue_id, dice1, dice2, dice3, point, result_text FROM sessions_new ORDER BY issue_id ASC")
+        rows = cur.fetchall()
+        
+        if not rows:
+            return "❌ Không có dữ liệu để xuất", 404
+        
+        data = []
+        for row in rows:
+            issue_id, dice1, dice2, dice3, point, result_text = row
+            data.append({
+                "id": issue_id,
+                "dice1": dice1,
+                "dice2": dice2,
+                "dice3": dice3,
+                "point": point,
+                "result": result_text
+            })
+        
+        filename = f"vn58_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        
+        return Response(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            mimetype="application/json",
+            headers={"Content-Disposition": f"attachment;filename={filename}"}
+        )
+        
+    except Exception as e:
+        return f"❌ Lỗi khi xuất file JSON: {e}", 500
+    finally:
+        cur.close()
+        conn.close()
+
+# ===== XUẤT FILE THEO CHUỖI LIÊN TỤC =====
 def export_continuous_chunks_txt():
-    """Xuất nhiều file TXT theo chuỗi liên tục"""
+    """Xuất nhiều file TXT theo chuỗi liên tục - đặt tên data1, data2..."""
     conn = get_conn()
     if not conn:
         return "❌ Lỗi kết nối database", 500
     
     try:
+        # Lấy các chuỗi liên tục
         chunks = get_continuous_chunks_vn58()
         
         if not chunks:
             return "❌ Không có dữ liệu để xuất", 404
         
+        # Tạo ZIP chứa tất cả file
         zip_buffer = BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
             for i, chunk in enumerate(chunks):
                 if len(chunk) > 0:
+                    # Lấy dữ liệu cho chunk này
                     cur = conn.cursor()
                     placeholders = ','.join(['%s'] * len(chunk))
                     cur.execute(f"""
@@ -346,16 +422,84 @@ def export_continuous_chunks_txt():
                     rows = cur.fetchall()
                     cur.close()
                     
+                    # Tạo nội dung file
                     content = ""
                     for row in rows:
                         issue_id, dice1, dice2, dice3, point, result_text = row
                         content += f"{issue_id}|{dice1}:{dice2}:{dice3}|{point}|{result_text}\n"
                     
+                    # ĐẶT TÊN FILE: data1, data2, data3...
                     filename = f"data{i+1}.txt"
+                    
+                    # Thêm vào ZIP
                     zip_file.writestr(filename, content)
         
         zip_buffer.seek(0)
         
+        # Trả về file ZIP
+        return Response(
+            zip_buffer.getvalue(),
+            mimetype="application/zip",
+            headers={"Content-Disposition": "attachment;filename=vn58_data_continuous.zip"}
+        )
+        
+    except Exception as e:
+        return f"❌ Lỗi khi xuất file: {e}", 500
+    finally:
+        conn.close()
+
+def export_continuous_chunks_json():
+    """Xuất nhiều file JSON theo chuỗi liên tục - đặt tên data1, data2..."""
+    conn = get_conn()
+    if not conn:
+        return "❌ Lỗi kết nối database", 500
+    
+    try:
+        # Lấy các chuỗi liên tục
+        chunks = get_continuous_chunks_vn58()
+        
+        if not chunks:
+            return "❌ Không có dữ liệu để xuất", 404
+        
+        # Tạo ZIP chứa tất cả file
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for i, chunk in enumerate(chunks):
+                if len(chunk) > 0:
+                    # Lấy dữ liệu cho chunk này
+                    cur = conn.cursor()
+                    placeholders = ','.join(['%s'] * len(chunk))
+                    cur.execute(f"""
+                        SELECT issue_id, dice1, dice2, dice3, point, result_text 
+                        FROM sessions_new 
+                        WHERE issue_id IN ({placeholders}) 
+                        ORDER BY issue_id
+                    """, chunk)
+                    rows = cur.fetchall()
+                    cur.close()
+                    
+                    # Chuyển đổi sang JSON
+                    data = []
+                    for row in rows:
+                        issue_id, dice1, dice2, dice3, point, result_text = row
+                        data.append({
+                            "id": issue_id,
+                            "dice1": dice1,
+                            "dice2": dice2,
+                            "dice3": dice3,
+                            "point": point,
+                            "result": result_text
+                        })
+                    
+                    # ĐẶT TÊN FILE: data1, data2, data3...
+                    filename = f"data{i+1}.json"
+                    
+                    # Thêm vào ZIP
+                    zip_file.writestr(filename, json.dumps(data, ensure_ascii=False, indent=2))
+        
+        zip_buffer.seek(0)
+        
+        # Trả về file ZIP
         return Response(
             zip_buffer.getvalue(),
             mimetype="application/zip",
@@ -370,7 +514,7 @@ def export_continuous_chunks_txt():
 # ===== FLASK WEB APP =====
 app = Flask(__name__)
 
-# HTML Template (giữ nguyên như trước)
+# HTML Template
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="vi">
@@ -554,7 +698,7 @@ HTML_TEMPLATE = '''
             <div class="nav-tab" onclick="showTab('export')">📁 Xuất dữ liệu</div>
         </div>
 
-        <!-- Các tab content giữ nguyên -->
+        <!-- Dashboard Tab -->
         <div id="dashboard" class="tab-content active">
             <div class="card">
                 <h2>
@@ -665,9 +809,16 @@ HTML_TEMPLATE = '''
             <div class="card">
                 <h2>📁 Xuất dữ liệu</h2>
                 
+                <p><strong>📦 Xuất toàn bộ (1 file):</strong></p>
+                <a href="/export/txt" class="btn">📄 Xuất file TXT</a>
+                <a href="/export/json" class="btn">📋 Xuất file JSON</a>
+                
                 <p style="margin-top: 20px;"><strong>🔗 Xuất theo chuỗi liên tục (Khuyến nghị):</strong></p>
                 <p><small>Dữ liệu được tách thành nhiều file data1, data2, data3... mỗi file là một chuỗi ID liên tục</small></p>
                 <a href="/export/continuous-txt" class="btn btn-success">📁 TXT theo chuỗi liên tục</a>
+                <a href="/export/continuous-json" class="btn btn-success">📁 JSON theo chuỗi liên tục</a>
+                
+                <a href="/api/data" class="btn">🔗 API JSON</a>
                 
                 <div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 5px;">
                     <h3>📊 Thống kê hiện tại</h3>
@@ -711,9 +862,31 @@ def home():
 def health():
     return "OK"
 
+@app.route("/export/txt")
+def export_txt():
+    """Xuất file TXT toàn bộ"""
+    return export_full_txt()
+
+@app.route("/export/json")
+def export_json():
+    """Xuất file JSON toàn bộ"""
+    return export_full_json()
+
 @app.route("/export/continuous-txt")
 def export_continuous_txt():
+    """Xuất nhiều file TXT theo chuỗi liên tục"""
     return export_continuous_chunks_txt()
+
+@app.route("/export/continuous-json")
+def export_continuous_json():
+    """Xuất nhiều file JSON theo chuỗi liên tục"""
+    return export_continuous_chunks_json()
+
+@app.route("/api/data")
+def api_data():
+    """API trả về JSON data"""
+    stats = get_statistics()
+    return jsonify(stats)
 
 # ===== Loop task với RETRY =====
 def loop_task():
