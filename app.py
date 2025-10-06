@@ -21,7 +21,7 @@ INTERVAL = 3600  # 1 giờ
 RETRY_INTERVAL = 300  # 5 phút giữa các lần retry
 MAX_RETRIES = 5  # Tối đa 5 lần thử lại
 
-DATABASE_URL = "postgresql://postgres.yqtvaxgthwqjegjouxko:12345abC_MatKhau@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres?sslmode=require"
+DATABASE_URL = "postgresql://postgres.yqtvaxgthwqjegjouxko:12345abC_MatKhau@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=require"
 
 # ===== DB helper =====
 def get_conn():
